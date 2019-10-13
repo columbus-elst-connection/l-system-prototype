@@ -6,15 +6,15 @@ use std::io::{Error, Read};
 use std::fmt::Debug;
 use std::hash::Hash;
 use api::{Rule, LSystemRules, LSystem, RendererConfig};
-#[macro_use] use self::combinator::{Parser, ParseError, many, map, at_least, character, literal, one_of};
+#[macro_use] use self::combinator::{Parser, ParseError, many, complete, map, at_least, character, literal, one_of, ignore_leading_ws};
 
 pub fn parse<P>(path: P) -> Result<LSystem<char>, ParseError>
 where P: AsRef<Path> {
     let mut file = File::open(path).map_err(to_parse_error)?;
     let mut input = String::new();
     file.read_to_string(&mut input).map_err(to_parse_error)?;
-    let (remaining_input, render_config) = parse_config(&input)?;
-    let rules = parse_rules(remaining_input)?;
+    let (render_config, remaining_input) = parse_config(&input)?;
+    let (rules, _) = complete(parse_rules).parse(remaining_input)?;
     Ok(LSystem {
         rules: LSystemRules::from_rules(rules),
         render_config,
@@ -42,7 +42,7 @@ fn to_parse_error(_io_error: Error) -> ParseError {
     ParseError::IO
 }
 
-fn key_equals_value<T>(key: &'static str, value_parser: impl Parser<T>, create: impl Fn(T) -> RenderConfigItem) -> impl Parser<RenderConfigItem> {
+fn key_equals_value<T>(key: &'static str, value_parser: impl Parser<T>, create: impl Fn(T) -> RenderConfigItem) -> impl Fn(&str) -> Result<(RenderConfigItem, &str), ParseError> {
     parse_sequence_ignore_spaces!{
         let _key = literal(key),
         let _eq = literal("="),
@@ -62,7 +62,7 @@ fn config_item_parser() -> impl Parser<RenderConfigItem> {
     ])
 }
 
-fn parse_config(input: &str) -> Result<(&str, RendererConfig), ParseError> {
+fn parse_config(input: &str) -> Result<(RendererConfig, &str), ParseError> {
     let (_, input) = skip_all_ws(input)?;
 
 
@@ -73,7 +73,7 @@ fn parse_config(input: &str) -> Result<(&str, RendererConfig), ParseError> {
         angle: 45.0,
         step_multiplier: 1.5,
     };
-    Ok((input, config))
+    Ok((config, input))
 }
 
 fn non_ws_char(input: &str) -> Result<(char, &str), ParseError> {
@@ -85,13 +85,13 @@ fn non_ws_char(input: &str) -> Result<(char, &str), ParseError> {
     }
 }
 
-fn parse_symbol() -> impl Parser<char> {
-    parse_sequence_ignore_spaces!{
-        let c = non_ws_char
-        =>
-        c
-    }
+
+parser_ignore_spaces!{parse_symbol char,
+    let c = non_ws_char
+    =>
+    c
 }
+
 
 fn skip_all_ws(input: &str) -> Result<((), &str), ParseError> {
     let byte_count = input.chars().take_while(|c| c.is_whitespace()).map(|c| c.len_utf8()).sum();
@@ -102,22 +102,33 @@ fn newline() -> impl Parser<()> {
     map(one_of(vec![literal("\n"), literal("\r\n"), literal("\r")]), |_| () )
 }
 
-
-fn parse_rules(input: &str) -> Result<Vec<Rule<char>>, ParseError> {
-    let parse_rule = parse_sequence_ignore_spaces!{
-        let to_match = parse_symbol(),
-        let _separator = literal("=>"),
-        let replacements = at_least(1, parse_symbol()),
-        let _newline = newline()
-        =>
-        Rule::new(to_match, replacements)
-    };
-    let parser = at_least(1, parse_rule);
-
-    parser.parse(input).map(|success| {
-        success.0
-    })
+parser_ignore_spaces!{parse_one_rule Rule<char>,
+    let to_match = parse_symbol,
+    let _separator = literal("=>"),
+    let replacements = at_least(1, parse_symbol),
+    let _newline = newline()
+    =>
+    Rule::new(to_match, replacements)
 }
+
+fn parse_rules(input: &str) -> Result<(Vec<Rule<char>>, &str), ParseError> {
+    let parser = at_least(1, parse_one_rule);
+    parser.parse(input)
+}
+
+// fn parse_rules(input: &str) -> Result<(Vec<Rule<char>>, &str), ParseError> {
+//     let parse_rule = parse_sequence_ignore_spaces!{
+//         let to_match = parse_symbol,
+//         let _separator = literal("=>"),
+//         let replacements = at_least(1, parse_symbol),
+//         let _newline = newline()
+//         =>
+//         Rule::new(to_match, replacements)
+//     };
+//     let parser = at_least(1, parse_rule);
+
+//     parser.parse(input)
+// }
 
 
 #[cfg(test)]

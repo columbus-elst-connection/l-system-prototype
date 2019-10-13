@@ -4,7 +4,7 @@ pub trait Parser<T> {
     fn parse<'a>(&self, input: &'a str) -> Result<(T, &'a str), ParseError>;
 }
 
-impl <T, F> Parser<T> for F where F: Fn(&str) -> Result<(T, &str), ParseError> {
+impl <T, F> Parser<T> for F where F: for <'a> Fn(&'a str) -> Result<(T, &'a str), ParseError> {
     fn parse<'a>(&self, input: &'a str) -> Result<(T, &'a str), ParseError> {
         self(input)
     }
@@ -94,7 +94,7 @@ impl<T, P> AtLeast<T, P> where P: Parser<T> + Sized {
     }
 }
 
-pub fn at_least<T, P: Parser<T> + Sized>(n: u8, parser: P) -> impl Parser<Vec<T>> {
+pub fn at_least<T, P: Parser<T> + Sized>(n: u8, parser: P) -> AtLeast<T, P> {
     AtLeast::new(n, parser)
 }
 
@@ -280,10 +280,49 @@ macro_rules! parse_sequence {
     }};
 }
 
+
+pub struct IgnoreLeadingWS<T, P: Parser<T>> {
+    parser: P,
+    _phantom: PhantomData<T>,
+}
+
+impl <T, P: Parser<T>> Parser<T> for IgnoreLeadingWS<T, P> {
+    fn parse<'a>(&self, input: &'a str) -> Result<(T, &'a str), ParseError> {
+        let (_, rem) = skip_spaces(input)?;
+        let (value, rem) = self.parser.parse(input)?;
+        let (_, rem) = skip_spaces(input)?;
+        Ok((value, rem))
+    }
+}
+
+pub fn ignore_leading_ws<T, P: Parser<T>>(parser: P) -> IgnoreLeadingWS<T, P> {
+    IgnoreLeadingWS {
+        parser,
+        _phantom: PhantomData,
+    }
+}
+
+#[macro_export]
+macro_rules! parser_ignore_spaces {
+    ($parser_name:ident $output_type:ty, $(let $name:ident = $parser:expr),+ => $finish:expr ) => {
+        pub fn $parser_name<'a>(input: &'a str) -> Result<($output_type, &'a str), ParseError> {
+            let rem: &'a str = input;
+            $(
+                let (_, rem) = $crate::combinator::skip_spaces(rem)?;
+                let ($name, rem) = $parser.parse(rem)?;
+            )*
+            let (_, rem) = $crate::combinator::skip_spaces(rem)?;
+            let result = { $finish };
+
+            Ok((result, rem))
+        }
+    }
+}
+
 #[macro_export]
 macro_rules! parse_sequence_ignore_spaces {
-    ($(let $name:ident = $parser:expr),+ => $finish:expr ) => {{
-        |input: &str| {
+    ($(let $name:ident = $parser:expr),+ => $finish:expr ) => {
+        move |input: &str| {
             let rem: &_ = input;
             $(
                 let (_, rem) = $crate::combinator::skip_spaces(rem)?;
@@ -293,7 +332,11 @@ macro_rules! parse_sequence_ignore_spaces {
             let result = { $finish };
             Ok((result, rem))
         }
-    }};
+    };
+    ($input:expr => $rem:tt) => {
+        let parser = parse_sequence_ignore_spaces!($rem);
+        parser($input)
+    }
 }
 
 #[cfg(test)]
